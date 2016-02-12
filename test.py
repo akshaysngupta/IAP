@@ -15,7 +15,8 @@ class POXBridge(Controller):
 controllers = {'poxbridge': POXBridge}
 
 if __name__ =='__main__':
-	net = Mininet( controller=POXBridge )
+	#net = Mininet( controller=POXBridge )
+	net = Mininet()
 
 	print "Adding Hosts"
 	h1 = net.addHost('h1')
@@ -56,6 +57,9 @@ if __name__ =='__main__':
 	h4.setIP('10.0.2.2')
 	h5.setIP('10.0.4.2')
 	h6.setIP('10.0.4.3')
+
+	c0 = Controller('c0',port=6633)
+	net.addController(c0)
 
 	print "Starting Network"
 	net.start()
