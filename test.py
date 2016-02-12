@@ -1,7 +1,7 @@
-from miniself.self import Miniself
-from miniself.util import dumpNodeConnections
-from miniself.node import Controller
-from miniself.topo import Topo
+from mininet.net import Mininet
+from mininet.util import dumpNodeConnections
+from mininet.node import Controller
+from mininet.topo import Topo
 import os
 
 class POXBridge(Controller):
