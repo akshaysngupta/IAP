@@ -22,12 +22,12 @@ class MyTopo(Topo):
 		Topo.__init__(self)
 
 		print "Adding Hosts"
-		h1 = self.addHost('h1')
-		h2 = self.addHost('h2')
-		h3 = self.addHost('h3')
-		h4 = self.addHost('h4')
-		h5 = self.addHost('h5')
-		h6 = self.addHost('h6')
+		h1 = self.addHost('h1',ip='10.0.1.2',defaultRoute='via 10.0.1.1')
+		h2 = self.addHost('h2',ip='10.0.1.3',defaultRoute='via 10.0.1.1')
+		h3 = self.addHost('h3',ip='10.0.3.2',defaultRoute='via 10.0.3.1')
+		h4 = self.addHost('h4',ip='10.0.2.2',defaultRoute='via 10.0.2.1')
+		h5 = self.addHost('h5',ip='10.0.4.2',defaultRoute='via 10.0.4.1')
+		h6 = self.addHost('h6',ip='10.0.4.3',defaultRoute='via 10.0.4.1')
 
 		print "Adding Switchs"
 		s1 = self.addSwitch('s1')
@@ -53,12 +53,5 @@ class MyTopo(Topo):
 		self.addLink(r1,r3)
 		self.addLink(r2,r4)
 		self.addLink(r3,r4)
-
-		h1.setIP('10.0.1.2')
-		h2.setIP('10.0.1.3')
-		h3.setIP('10.0.3.2')
-		h4.setIP('10.0.2.2')
-		h5.setIP('10.0.4.2')
-		h6.setIP('10.0.4.3')
 
 topos = { 'mytopo': ( lambda:MyTopo() ) }
