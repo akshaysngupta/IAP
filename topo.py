@@ -4,17 +4,6 @@ from mininet.node import Controller
 from mininet.topo import Topo
 import os
 
-class POXBridge(Controller):
-	def start(self):
-		print "POX Controller Started"
-		self.pox = '%s/pox/pox.py' % os.environ['HOME']
-		self.cmd(self.pox,'misc.controller &')
-	def stop(self):
-		print "Stop POX"
-		self.cmd('kill %' + self.pox)
-
-controllers = {'poxbridge': POXBridge}
-
 class MyTopo(Topo):
 
 	def __init__(self):
@@ -33,10 +22,10 @@ class MyTopo(Topo):
 		s1 = self.addSwitch('s1')
 		s2 = self.addSwitch('s2')
 
-		r1 = self.addSwitch('r1')
-		r2 = self.addSwitch('r2')
-		r3 = self.addSwitch('r3')
-		r4 = self.addSwitch('r4')
+		r1 = self.addSwitch('s3')
+		r2 = self.addSwitch('s4')
+		r3 = self.addSwitch('s5')
+		r4 = self.addSwitch('s6')
 
 		print "Adding Links"
 		self.addLink(h1,s1)
@@ -50,7 +39,7 @@ class MyTopo(Topo):
 		self.addLink(s2,r4)
 
 		self.addLink(r1,r2)
-		self.addLink(r1,r3)
+		#self.addLink(r1,r3)
 		self.addLink(r2,r4)
 		self.addLink(r3,r4)
 
