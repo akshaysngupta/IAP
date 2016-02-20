@@ -3,6 +3,7 @@ import pox.openflow.libopenflow_01 as of
 from pox.lib.util import dpid_to_str
 from pox.lib.util import str_to_bool
 import time
+import socket, struct
 
 log = core.getLogger()
 
@@ -27,6 +28,8 @@ class FloodSwitch (object):
 
     flood(packet)
 
+
+
 class StaticRouter (object):
   def __init__ (self, connection):
     self.connection = connection
@@ -43,6 +46,24 @@ class StaticRouter (object):
       msg.in_port = event.port
       self.connection.send(msg)
     flood(packet)
+
+  class ForwardTable():
+    def __init__ (self, dpid):
+      with open("/static_routing/"+dpid_to_str(dpid)[-1:]) at table:
+        self.rtable = []
+        for line in table.readlines():
+          field =line.split(',')
+          h = []
+          h.append(field[0],field[1],field[2],field[3])
+          self.rtable.append(h)
+
+    def iptoint(ip):
+      return  struct.unpack("!L",ip) 
+
+    def findNextHop(dstip):
+      for row in self.rtable:
+        if iptoint(row[1]) and iptoint(dstip) == iptoint(row[0])
+          return row
 
 class Register(object):
   def __init__ (self):
