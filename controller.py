@@ -22,6 +22,14 @@ class FloodSwitch (object):
 	def _handle_PacketIn (self, event):
 		packet = event.parsed
 
+		if packet.type == packet.IP_TYPE:
+			print "Flooding ICMP from ", packet.src
+		if packet.type == packet.ARP_TYPE:
+			if packet.payload.opcode == arp.REPLY:
+				print "Flooding ARP REPLY from ", packet.payload.hwsrc
+			else:
+				print "Flooding ARP REQ from ", packet.payload.hwsrc
+
 		def flood(message = None):
 			print "Flooding by ",event.dpid
 			msg = of.ofp_packet_out()
@@ -33,7 +41,7 @@ class FloodSwitch (object):
 
 class ForwardTable():
 	def __init__ (self, dpid):
-		self.cache = {} 
+		self.cache = {}
 		with open("/home/mininet/IAP/static_routing/"+dpid_to_str(dpid)[-1:]) as table:
 			self.rtable = []
 			for line in table.readlines():
@@ -84,7 +92,7 @@ class StaticRouter (object):
 	def handle_arp(self,event):
 		packet = event.parsed
 		if packet.payload.opcode == arp.REQUEST:
-			print "Recieved ARP Request for ",packet.payload.protodst, event.dpid
+			print "Received ARP Request (for, from, at) ",packet.payload.protodst, packet.payload.protosrc, event.dpid
 
 			if str(packet.payload.protosrc)[-1:]=='1':
 				if self.ip != packet.payload.protodst:
@@ -128,23 +136,23 @@ class StaticRouter (object):
 			event.connection.send(msg)
 
 		elif packet.payload.opcode == arp.REPLY:
-			print "Recieved ARP REPLY (dest router)",event.dpid
+			print "Received ARP REPLY from (dest router) :",packet.payload.protosrc
 			arp_reply = packet.payload
 
 			self.ipToPort[str(arp_reply.protosrc)] = event.port
 			self.ipToMac[str(arp_reply.protosrc)] = arp_reply.hwsrc
-			print "Saving Mapping for (ip,port number)", arp_reply.protosrc, event.port
+			print "Saving Mapping for (mappedIp, mappedPort, at ) :", arp_reply.protosrc, event.port, event.dpid
 			print self.ipToPort
-			print "Packets to be sent by",event.dpid
-			print self.packetQueue[str(arp_reply.protosrc)]
+			print "Resending buffered packets ... at Router",event.dpid
+			# print self.packetQueue[str(arp_reply.protosrc)]
 			for pac in self.packetQueue[str(arp_reply.protosrc)]:
-				print ">>>>Re Sending Queued Packets-",str(pac.find('icmp')),arp_reply.hwsrc
+				print "Packet - ",str(pac.find('icmp')),arp_reply.hwsrc
 				msg = of.ofp_packet_out()
 				msg.actions.append(of.ofp_action_output(port = event.port))
 				pac.src = self.mac
 				pac.dst = arp_reply.hwsrc
 				msg.data = pac.pack()
-				msg.in_port = event.port
+				# msg.in_port = event.port
 				event.connection.send(msg)
 
 			self.packetQueue[str(arp_reply.protosrc)] = []
@@ -154,7 +162,7 @@ class StaticRouter (object):
 
 	def do_arp(self,dstip):
 
-		print "Doing ARP REQUEST for (ip, source router)",dstip, self.connection.dpid
+		print "Doing ARP REQUEST for (ip, source router) :",dstip, self.connection.dpid
 		arp_req = arp()
 		arp_req.hwsrc = self.mac
 		arp_req.opcode = arp.REQUEST
@@ -204,7 +212,6 @@ class StaticRouter (object):
 		event.connection.send(msg)
 
 	def handle_packet(self,event):
-
 		packet = event.parsed
 
 		ipv4 = packet.find('ipv4')
@@ -219,14 +226,14 @@ class StaticRouter (object):
 		ipv4.csum = ipv4.checksum()
 
 		hop = self.forwardTable.findNextHop(ipv4.dstip,event)
-		print "Normal Packet Received By (Router,my ip,next hop) ",event.dpid,self.ip,hop
+		print "Normal Packet received at (routerID, selfIP, nextHop) :", event.dpid, self.ip, hop, str(packet.find('icmp'))
 
 		if hop not in self.ipToPort:
 
 			if hop not in self.packetQueue:
 				self.packetQueue[hop] = []
 
-			print "Queuing Packet by and seq",event.dpid, str(packet.find('icmp'))
+			print "Queuing packet (at, seq) :",event.dpid, str(packet.find('icmp'))
 			self.packetQueue[hop].append(packet)
 			self.do_arp(hop)
 		else:
@@ -243,6 +250,7 @@ class StaticRouter (object):
 			self.connection.send(msg)
 
 	def _handle_PacketIn (self, event):
+		print "Got packet at ", event.dpid
 		self.event = event
 		packet = event.parsed
 
