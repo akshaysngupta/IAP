@@ -23,8 +23,8 @@ class FloodSwitch (object):
 		packet = event.parsed
 
 		if packet.type == packet.IP_TYPE:
-			print "Flooding ICMP from ", packet.src
-		if packet.type == packet.ARP_TYPE:
+			print "Flooding ICMP from ", packet.src, packet.payload
+		elif packet.type == packet.ARP_TYPE:
 			if packet.payload.opcode == arp.REPLY:
 				print "Flooding ARP REPLY from ", packet.payload.hwsrc
 			else:
@@ -74,7 +74,7 @@ class ForwardTable():
 			if diff == 0:
 				self.cache[str(dstip)] = row[2]
 				return row[2]
-		return
+		return None
 
 class StaticRouter (object):
 	def __init__ (self, connection):
@@ -145,6 +145,8 @@ class StaticRouter (object):
 			print self.ipToPort
 			print "Resending buffered packets ... at Router",event.dpid
 			# print self.packetQueue[str(arp_reply.protosrc)]
+			if str(arp_reply.protosrc) not in self.packetQueue.keys():
+				return
 			for pac in self.packetQueue[str(arp_reply.protosrc)]:
 				print "Packet - ",str(pac.find('icmp')),arp_reply.hwsrc
 				msg = of.ofp_packet_out()
@@ -167,6 +169,7 @@ class StaticRouter (object):
 		arp_req.hwsrc = self.mac
 		arp_req.opcode = arp.REQUEST
 		arp_req.protosrc = self.ip
+		print "This is the string : ", dstip
 		arp_req.protodst = IPAddr(dstip)
 
 		ether = ethernet()
@@ -211,6 +214,46 @@ class StaticRouter (object):
 		msg.in_port = event.port
 		event.connection.send(msg)
 
+	def reply_host_unreachable(self, event):
+		print "Replying Host Unreachable from ", event.dpid
+		packet = event.parsed
+		icmp_reply = icmp()
+		icmp_reply.type = pkt.TYPE_DEST_UNREACH
+		icmp_reply.code = pkt.CODE_UNREACH_HOST
+		# icmp_reply.payload = packet.find("icmp").payload
+		d = packet.pack()
+		print d
+		temp = packet.find("ipv4")
+		print temp
+		pk = temp.pack()
+		d = pk[:temp.hl+8]
+		# d = struct.pack("!HH", 0, 0) + d
+		icmp_reply.payload = d
+
+		# Make the IP packet around it
+		ipp = pkt.ipv4()
+		ipp.protocol = ipp.ICMP_PROTOCOL
+		ipp.srcip = self.ip
+		ipp.dstip = packet.find("ipv4").srcip
+
+		# Ethernet around that...
+		e = pkt.ethernet()
+		e.src = self.mac
+		e.dst = packet.src
+		e.type = e.IP_TYPE
+
+		# Hook them up...
+		ipp.payload = icmp_reply
+		e.payload = ipp
+
+		# Send it back to the input port
+		msg = of.ofp_packet_out()
+		msg.actions.append(of.ofp_action_output(port = of.OFPP_IN_PORT))
+		msg.data = e.pack()
+		msg.in_port = event.port
+		print "Sending to (fromIP, toIP, fromMAC, toMAC) : ", ipp.srcip, ipp.dstip, e.src, e.dst
+		event.connection.send(msg)
+
 	def handle_packet(self,event):
 		packet = event.parsed
 
@@ -226,7 +269,12 @@ class StaticRouter (object):
 		ipv4.csum = ipv4.checksum()
 
 		hop = self.forwardTable.findNextHop(ipv4.dstip,event)
-		print "Normal Packet received at (routerID, selfIP, nextHop) :", event.dpid, self.ip, hop, str(packet.find('icmp'))
+		print "Normal Packet received at (routerID, selfIP, nextHop) :", event.dpid, self.ip, hop
+
+		if hop is None:
+			# Host unreachable
+			self.reply_host_unreachable(event);
+			return
 
 		if hop not in self.ipToPort:
 
