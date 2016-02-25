@@ -9,6 +9,7 @@ from pox.lib.packet.ethernet import ethernet,ETHER_BROADCAST
 from pox.lib.addresses import IPAddr,EthAddr
 import struct,socket
 import pox.lib.packet as pkt
+import sys
 
 log = core.getLogger()
 
@@ -67,13 +68,20 @@ class ForwardTable():
 		# return nexthop
 		if str(dstip) in self.cache:
 			return self.cache[str(dstip)]
-
+		min_diff = int('0xFFFFFFFF',0)
 		for row in self.rtable:
 			diff = (self.iptoint(row[1]) & self.iptoint(str(dstip))) - self.iptoint(row[0])
 			#print "diff,dstip,dsttab,netmask",diff, str(dstip), row[0],row[1]
+			if min_diff > diff:
+				min_diff = diff
 			if diff == 0:
 				self.cache[str(dstip)] = row[2]
 				return row[2]
+		
+		if min_diff > int('0xFF',0):
+			return -1
+		else:
+			return -2
 		return None
 
 class StaticRouter (object):
@@ -214,20 +222,16 @@ class StaticRouter (object):
 		msg.in_port = event.port
 		event.connection.send(msg)
 
-	def reply_host_unreachable(self, event):
+	def reply_icmp_error(self, event, icmp_type, code):
 		print "Replying Host Unreachable from ", event.dpid
 		packet = event.parsed
 		icmp_reply = icmp()
-		icmp_reply.type = pkt.TYPE_DEST_UNREACH
-		icmp_reply.code = pkt.CODE_UNREACH_HOST
+		icmp_reply.type = icmp_type
+		icmp_reply.code = code
 		# icmp_reply.payload = packet.find("icmp").payload
-		d = packet.pack()
-		print d
-		temp = packet.find("ipv4")
-		print temp
-		pk = temp.pack()
-		d = pk[:temp.hl+8]
-		# d = struct.pack("!HH", 0, 0) + d
+		d = packet.next.pack()
+		d = d[:packet.next.hl*4+8]
+		d = struct.pack("!HH", 0, 0) + d
 		icmp_reply.payload = d
 
 		# Make the IP packet around it
@@ -261,6 +265,13 @@ class StaticRouter (object):
 		if ipv4.csum!=ipv4.checksum():
 			print "Checksum error!!"
 
+		print 'TTL ', ( ipv4.ttl, event.dpid)
+
+		if ipv4.ttl == 0:
+			print 'TTL EXPIRED', event.dpid
+			self.reply_icmp_error(event, pkt.TYPE_TIME_EXCEED, pkt.CODE_UNREACH_NET)
+			return
+
 		if ipv4.dstip==self.ip:
 			self.handle_icmp(event)
 			return
@@ -271,10 +282,10 @@ class StaticRouter (object):
 		hop = self.forwardTable.findNextHop(ipv4.dstip,event)
 		print "Normal Packet received at (routerID, selfIP, nextHop) :", event.dpid, self.ip, hop
 
-		if hop is None:
-			# Host unreachable
-			self.reply_host_unreachable(event);
-			return
+		if hop == -1:
+			self.reply_icmp_error(event, pkt.TYPE_DEST_UNREACH, pkt.CODE_UNREACH_NET);
+		elif hop == -2:
+			self.reply_icmp_error(event, pkt.TYPE_DEST_UNREACH, pkt.CODE_UNREACH_HOST);
 
 		if hop not in self.ipToPort:
 
