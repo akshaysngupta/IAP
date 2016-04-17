@@ -5,26 +5,31 @@ from pox.lib.util import str_to_bool
 import time
 from pox.lib.packet.arp import arp
 from pox.lib.packet.icmp import icmp
+from pox.lib.packet.ipv4 import ipv4
+from pox.lib.packet.pwospf import pwospf
 from pox.lib.packet.ethernet import ethernet,ETHER_BROADCAST
 from pox.lib.addresses import IPAddr,EthAddr
 import struct,socket
 import pox.lib.packet as pkt
 import sys
+import threading
 
 log = core.getLogger()
+
+HELLOINT = 30
 
 switch_list = {"00-00-00-00-00-01","00-00-00-00-00-02"}
 
 class FloodSwitch (object):
 	def __init__ (self, connection):
-	    self.connection = connection
-	    connection.addListeners(self)
+		self.connection = connection
+		connection.addListeners(self)
 
 	def _handle_PacketIn (self, event):
 		packet = event.parsed
 
 		if packet.type == packet.IP_TYPE:
-			print "Flooding ICMP from ", packet.src, packet.payload
+			print "Flooding IP from ", packet.src, packet.payload
 		elif packet.type == packet.ARP_TYPE:
 			if packet.payload.opcode == arp.REPLY:
 				print "Flooding ARP REPLY from ", packet.payload.hwsrc
@@ -84,7 +89,7 @@ class ForwardTable():
 			return -2
 		return None
 
-class StaticRouter (object):
+class PWOSPFRouter (object):
 	def __init__ (self, connection):
 		self.connection = connection
 		connection.addListeners(self)
@@ -93,9 +98,67 @@ class StaticRouter (object):
 		self.ipToPort = {}
 		self.ipToMac = {}
 		self.packetQueue = {}
+
 		self.mac = EthAddr("00:12:34:56:78:9" + dpid_to_str(self.connection.dpid)[-1:])
 		self.ip = IPAddr("10.0."+ str(int(dpid_to_str(self.connection.dpid)[-1:])-2) +".1")
 		print "Router Details:",self.connection.dpid,self.mac,self.ip
+
+
+		self.inf_ip = {}
+		self.inf_port = {}
+		self.inf_ip["r1-eth1"] = "192.0.1.1"
+		self.inf_ip["r1-eth2"] = "192.0.4.1"
+		self.inf_ip["r1-eth3"] = self.ip
+
+		self.inf_port["r1-eth1"] = 0
+		self.inf_port["r1-eth2"] = 1
+		self.inf_port["r1-eth3"] = 2
+
+		# LSU Fields
+		self.counter = 0
+		update_thread = threading.Thread(target=self.setupUpdateLoop)
+		update_thread.daemon = True
+		update_thread.start()
+
+	def setupUpdateLoop(self):
+		counter = 0
+		while(1):
+			self.sendHelloAll()
+			# self.checkTimeOut()
+			# if counter%3 == 0 and counter > 0:
+			# 	self.sendLSUpdate()
+
+			counter = counter + 1
+			time.sleep(5)
+
+	def sendHelloAll(self):
+		for key in self.inf_ip.keys():
+			self.sendHello(key)
+
+	def sendHello(self,inf):
+		print str(self.ip) + " sending hello message!" 
+
+		pwospf_hello = pwospf()
+		pwospf_hello.type = pwospf.TYPE_HELLO
+		pwospf_hello.payload = bytes(HELLOINT << 16)
+
+		ipp = pkt.ipv4()
+		ipp.protocol = ipv4.PWOSPF_PROTOCOL
+		ipp.srcip = IPAddr(self.inf_ip[inf])
+		ipp.payload = pwospf_hello
+
+		ether = ethernet()
+		ether.type = ethernet.IP_TYPE
+		ether.src = self.mac
+		ether.dst = ETHER_BROADCAST
+		ether.payload = ipp
+
+		msg = of.ofp_packet_out()
+		msg.actions.append(of.ofp_action_output(port = self.inf_port[inf]))
+		msg.data = ether.pack()
+		self.connection.send(msg)
+
+
 
 	def handle_arp(self,event):
 		packet = event.parsed
@@ -258,7 +321,22 @@ class StaticRouter (object):
 		print "Sending to (fromIP, toIP, fromMAC, toMAC) : ", ipp.srcip, ipp.dstip, e.src, e.dst
 		event.connection.send(msg)
 
-	def handle_packet(self,event):
+	def handle_pwospf(self,event):
+		packet = event.parsed
+		pwospf = packet.find('pwospf')
+		ipv4 = packet.find('ipv4')
+		print str(ipv4)
+		
+		if pwospf.type ==pwospf.TYPE_HELLO:
+			print "Recived Hello", str(pwospf)
+			sender_hi = int(pwospf.payload) >> 16
+			print "Helloint",sender_hi
+
+		if pwospf.type ==pwospf.TYPE_LSU:
+			print "Recived LSU", str(pwospf)
+		
+
+	def handle_ipv4(self,event):
 		packet = event.parsed
 
 		ipv4 = packet.find('ipv4')
@@ -270,6 +348,11 @@ class StaticRouter (object):
 		if ipv4.ttl == 0:
 			print 'TTL EXPIRED', event.dpid
 			self.reply_icmp_error(event, pkt.TYPE_TIME_EXCEED, pkt.CODE_UNREACH_NET)
+			return
+
+		pwospf = packet.find('pwospf')
+		if pwospf != None:
+			self.handle_pwospf(event)
 			return
 
 		if ipv4.dstip==self.ip:
@@ -312,11 +395,12 @@ class StaticRouter (object):
 		print "Got packet at ", event.dpid
 		self.event = event
 		packet = event.parsed
-
-		if packet.type == packet.ARP_TYPE:
-			self.handle_arp(event)
 		if packet.type == packet.IP_TYPE:
-			self.handle_packet(event)
+			print "IPv4 Packet"
+			self.handle_ipv4(event)
+		if packet.type == packet.ARP_TYPE:
+			print "ARP Packet"
+			self.handle_arp(event)
 
 
 class Register(object):
@@ -329,7 +413,7 @@ class Register(object):
 		if dpid_to_str(event.connection.dpid) in switch_list:
 		  FloodSwitch(event.connection)
 		else:
-		  StaticRouter(event.connection)
+		  PWOSPFRouter(event.connection)
 
 
 def launch():
