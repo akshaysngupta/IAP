@@ -18,7 +18,7 @@ if core != None:
 SWITCH_TYPE_INVALID     = 0x00
 SWITCH_TYPE_HUB         = 0x01
 SWiTCH_TYPE_ROUTER      = 0x02
-HELLOINT = 12
+ALLSPFRouters = "224.0.0.5"
 
 #TODO: remove this table, and use some file
 rtable = {}
@@ -170,12 +170,46 @@ class RoutingTable():
     def __str__(self):
         return "[" + ", ".join(["<"+str(r)+">" for r in self.routingEntries]) + "]"
 
+class NeighbourEntry():
+    def __init__(self):
+        self.rid = 0
+        self.ip = ""
+        self.helloint = 0
+        self.uptime = 0
+
+    def __str__(self):
+        return "(Rid: "+str(self.rid)+", Ip: "+self.ip + ", helloint: "+str(self.helloint)+", uptime: "+str(self.uptime)
+
+    def expired(self):
+        curtime = int(round(time.time()))
+        if curtime - self.uptime > 3*self.helloint:
+            return True
+        return False
+
+
+class NeighbourList():
+    def __init__(self):
+        self.neighbourList = {}
+
+    def checkTimeout(self):
+        for key,value in self.neighbourList.items():
+            if value.expired()==True:
+                print "Deleting ",key
+        self.neighbourList = { key:value for key,value in self.neighbourList.items() if value.expired()==False}
+
+    def addEntry(self,rid,ip,helloint):
+        self.neighbourList[rid] = NeighbourEntry()
+        self.neighbourList[rid].rid = rid
+        self.neighbourList[rid].ip = ip
+        self.neighbourList[rid].helloint = helloint
+        self.neighbourList[rid].uptime = int(round(time.time()))
 
 
 class RouterHandler(EventMixin):
     def __init__(self, connection, *ka, **kw):
         self.connection = connection
         self.name = ""
+        self.rid = 0
         self.type = SWITCH_TYPE_INVALID
         self.routingInfo = None
         log.debug("Handler: ka:" + str(ka) + " kw: " + str(kw))
@@ -186,11 +220,14 @@ class RouterHandler(EventMixin):
         self.port2intf = {}
         self.arpTable = {}
         self.hwadr2Port = {}
+        self.intf2nl = {}
         self.outstandingarp = {} #just key:ip and val timestamp(later`)
         self.queuedMsgForArp = {} #nested
         self.ARP_TIMEOUT = 4
         self.myips  = []
         self.initialize_controller()
+        self.helloint = 5
+        self.lsuint = 30
 
         # LSU Fields
         if self.type == SWiTCH_TYPE_ROUTER:
@@ -203,12 +240,19 @@ class RouterHandler(EventMixin):
         counter = 0
         while(1):
             self.sendHelloAll()
-            # self.checkTimeOut()
+            self.checkTimeOut()
             # if counter%3 == 0 and counter > 0:
             #   self.sendLSUpdate()
 
             counter = counter + 1
-            time.sleep(5)
+            if self.name=="R1":
+                print "I am sleeping :)", self.rid
+                time.sleep(50)
+            time.sleep(self.helloint)
+
+    def checkTimeOut(self):
+        for key,value in self.intf2nl.items():
+            value.checkTimeout()
 
     def sendHelloAll(self):
         for entry in self.intf_ip:
@@ -221,12 +265,14 @@ class RouterHandler(EventMixin):
         mac = self.port2Mac[port]
 
         pwospf_hello = pwospf()
+        pwospf_hello.rid = self.rid
         pwospf_hello.type = pwospf.TYPE_HELLO
-        pwospf_hello.payload = bytes(HELLOINT << 16)
+        pwospf_hello.payload = bytes(self.helloint << 16)
 
         ipp = pkt.ipv4()
         ipp.protocol = ipv4.PWOSPF_PROTOCOL
         ipp.srcip = IPAddr(srcip)
+        ipp.dstip = IPAddr(ALLSPFRouters)
         ipp.payload = pwospf_hello
 
         ether = ethernet()
@@ -239,6 +285,9 @@ class RouterHandler(EventMixin):
         msg.actions.append(of.ofp_action_output(port = port))
         msg.data = ether.pack()
         self.connection.send(msg)
+
+    def sendLSU(self):
+        pass
     
     def initialize_controller(self):
         for port in self.connection.features.ports:
@@ -258,6 +307,7 @@ class RouterHandler(EventMixin):
         elif self.name[0] == "R":
             self.type = SWiTCH_TYPE_ROUTER
             self.intf_ip = [ [key,value] for key,value in ROUTERS_IPS.items() if self.name==key[0:2] ]
+            self.rid = IPAddr(self.intf_ip[0][1]).toUnsignedN()
         if self.name in rtable:
             self.routingInfo = RoutingTable()
             self.routingInfo.addEntries(rtable[self.name])
@@ -387,11 +437,15 @@ class RouterHandler(EventMixin):
                 #self.drop_packet(event)
 
     def handle_pwospf_packet(self, event, packet):
-
+        ipv4 = packet.find('ipv4')
         pwospf = packet.find('pwospf')
         if pwospf.type == pkt.pwospf.TYPE_HELLO:
-            print "Hello received"
-            print "Helloint",int(pwospf.payload) >> 16
+            print "Hello received", str(pwospf)
+            helloint = int(pwospf.payload) >> 16
+            intf = self.port2intf[event.port]
+            if intf not in self.intf2nl.keys():
+                self.intf2nl[intf] = NeighbourList()
+            self.intf2nl[intf].addEntry(pwospf.rid,str(ipv4.srcip),helloint)
         if pwospf.type == pkt.pwospf.TYPE_LSU:
             print "LSU received"
 
