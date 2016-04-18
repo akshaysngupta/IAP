@@ -152,7 +152,7 @@ class pwospf(packet_base):
 
         if self.type==pwospf.TYPE_LSU:
             (self.seq,self.ttl,self.nadv) = struct.unpack('!HHI', raw[pwospf.MIN_LEN:pwospf.MIN_LEN+8])
-            nadv_string = '!'.join(self.nadv * 'III')
+            nadv_string = '!'+''.join(self.nadv * 'III')
             self.advList =  matrix(struct.unpack(nadv_string, raw[pwospf.MIN_LEN+8:self.plen]) )
 
             self.next =  raw[self.MIN_LEN + 8 + self.nadv * 12 : self.plen]
