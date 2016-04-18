@@ -105,7 +105,7 @@ class pwospf(packet_base):
 
         # LSU packet
         self.seq = 0
-        self.ttl = 0
+        self.ttl = 64
         self.nadv = 0
         self.advList = []
 
@@ -122,7 +122,7 @@ class pwospf(packet_base):
 
         return s
 
-    def matrix(l,n):
+    def matrix(self,l,n):
         return [l[i:i+n] for i in xrange(0,len(l),n)]
 
     def parse(self, raw):
@@ -152,9 +152,8 @@ class pwospf(packet_base):
 
         if self.type==pwospf.TYPE_LSU:
             (self.seq,self.ttl,self.nadv) = struct.unpack('!HHI', raw[pwospf.MIN_LEN:pwospf.MIN_LEN+8])
-            nadv_string = '!'+''.join(self.nadv * 'III')
-            self.advList =  matrix(struct.unpack(nadv_string, raw[pwospf.MIN_LEN+8:self.plen]) )
-
+            nadv_string = '!'+str(3 * self.nadv) + "I"
+            self.advList =  struct.unpack(nadv_string, raw[pwospf.MIN_LEN+8:self.plen])
             self.next =  raw[self.MIN_LEN + 8 + self.nadv * 12 : self.plen]
 
         self.parsed = True
@@ -172,13 +171,11 @@ class pwospf(packet_base):
             self.plen += 8
             return struct.pack('!BBHIIHHQII',self.version, self.type, self.plen, self.rid, self.aid, self.csum,
             self.autype, self.auth,self.netmask,self.helloint)
+
         if self.type==pwospf.TYPE_LSU:
             self.plen += 8 + self.nadv * 12
-            packet1 =  struct.pack('!BBHIIHHQHHI',self.version, self.type, self.plen, self.rid, self.aid, self.csum,
-            self.autype, self.auth,self.seq,self.ttl,self.nadv)
+            format_string = "!BBHIIHHQHHI" + str(3 * self.nadv) + "I"
 
-            for adv in self.advList:
-                packet2 += struct.pack("!III",adv[0],adv[1],adv[2])
-            packet1 = packet1 + packet2
+            return struct.pack(format_string,self.version, self.type, self.plen, self.rid, self.aid, self.csum,
+            self.autype, self.auth,self.seq,self.ttl,self.nadv,*self.advList)
 
-            return packet1

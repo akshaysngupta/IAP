@@ -28,7 +28,7 @@ rtable["R1"] = [
             ['10.0.3.0/24', '192.0.1.2', 'R1-eth3'],
             ['10.0.1.0/24', '10.0.1.1', 'R1-eth1'],
             ['192.0.0.0/16', '192.0.4.2', 'R1-eth2'],
-            ['19.0.1.0/24', '192.0.1.2', 'R1-eth3'],
+            ['192.0.1.0/24', '192.0.1.2', 'R1-eth3'],
         ]
 rtable["R2"] = [
             ['10.0.0.0/16', '192.0.3.2', 'R2-eth2'],
@@ -53,22 +53,15 @@ rtable["R3"] = [
             ['192.0.2.0/24', '192.0.2.2', 'R3-eth3'],
         ]
 
+OWN_SUBNET = {
+    "R1": ['10.0.1.0/24', '10.0.1.1', 'R1-eth1'],
+    "R2": ['10.0.2.0/24', '10.0.2.1', 'R2-eth3'],
+    "R3": ['10.0.3.0/24', '10.0.3.1', 'R3-eth2'],
+    "R4": ['10.0.4.0/24', '10.0.4.1', 'R4-eth3']
+}
+
 ROUTERS_IPS = {
             "R1-eth1" : "10.0.1.1",
-            "R1-eth2" : "192.0.4.1",
-            "R2-eth1" : "192.0.4.2",
-            "R2-eth2" : "192.0.3.1",
-            "R4-eth1" : "192.0.3.2",
-            "R1-eth3" : "192.0.1.1",
-            "R3-eth1" : "192.0.1.2",
-            "R3-eth2" : "10.0.3.1",
-            "R3-eth3" : "192.0.2.1",
-            "R4-eth2" : "192.0.2.2",
-            "R2-eth3" : "10.0.2.1",
-            "R4-eth3" : "10.0.4.1"
-        }
-ROUTERS_SUBNETS = {
-            "R1-eth1" : "10.0.1.0/24",
             "R1-eth2" : "192.0.4.1",
             "R2-eth1" : "192.0.4.2",
             "R2-eth2" : "192.0.3.1",
@@ -84,6 +77,13 @@ ROUTERS_SUBNETS = {
 
 # ROUTERS_IP_2_PORT = {}
 
+def getCIDR(subnet_str, netmask_str):
+    netmask = netmask_str.split('.')
+    binary_str = ''
+    for octet in netmask:
+        binary_str += bin(int(octet))[2:].zfill(8)
+    netmask_cidr = str(len(binary_str.rstrip('0')))
+    return subnet_str + '/' + netmask_cidr
 
 class RoutingEntry():
     def __init__(self, txtEntry = []):
@@ -194,9 +194,10 @@ class NeighbourEntry():
         self.interface = ""
         self.netmask = ""
         self.subnet = ""
+        self.own = False
 
     def __str__(self):
-        return "(Rid: "+str(self.rid)+", Ip: "+self.ip + ", helloint: "+str(self.helloint)+", uptime: "+str(self.uptime)
+        return "(Rid: "+str(self.rid)+", Ip: "+self.ip + ", helloint: "+str(self.helloint)+", uptime: "+str(self.uptime) + ", netmask: " + self.netmask + ", subnet: " + self.subnet+", interface:"+self.interface+")"
 
     def expired(self):
         curtime = int(round(time.time()))
@@ -207,30 +208,53 @@ class NeighbourEntry():
 def find_subnet(ipaddr_str, netmask_str):
     ipaddr = ipaddr_str.split('.')
     netmask = netmask_str.split('.')
-    net_start = [str(int(ipaddr[x]) & int(netmask[x])) for x in range(0,4)]
-    print '.'.join(net_start)
+    net_start = [str( int(ipaddr[x]) & int(netmask[x]) ) for x in range(0,4)]
+    return '.'.join(net_start)
 
 class NeighbourList():
     def __init__(self):
         self.neighbourList = []
 
-    def checkTimeout(self):
-        for key,value in self.neighbourList.items():
-            if value.expired()==True:
-                print "Deleting ",key
-        self.neighbourList = { key:value for key,value in self.neighbourList.items() if value.expired()==False}
+    def __str__(self):
+        s = ""
+        for ne in self.neighbourList:
+            s += str(ne)
+        return s
 
-    def addEntry(self,rid,ip,netmask,interface,helloint):
+    def checkTimeout(self):
+            flag = False
+            for ne in self.neighbourList:
+                if ne.own==False and ne.expired()==True:
+                    print "Deleting ",ne.rid
+                    flag = True
+            self.neighbourList = [ ne for ne in self.neighbourList if ne.own==True or ne.expired()==False]
+            return flag
+
+    def items(self):
+        return self.neighbourList
+
+    def getIP(self,rid):
+        for ne in self.neighbourList:
+            if rid == ne.rid:
+                return ne.ip
+
+    def getInterface(self,rid):
+        for ne in self.neighbourList:
+            if rid == ne.rid:
+                return ne.interface
+
+    def addEntry(self,rid,ip,subnet,netmask,interface,helloint,own=False):
 
         ne = NeighbourEntry()
 
         ne.rid = rid
-        ne.ip = ip
+        ne.ip = str(IPAddr(ip))
+        ne.netmask = str(IPAddr(netmask))
         ne.interface = interface
-        ne.subnet = find_subnet(ip,netmask)
-        ne.netmask = netmask
+        ne.subnet = subnet
         ne.helloint = helloint
         ne.uptime = int(round(time.time()))
+        ne.own = own
 
         # If exist in table, update uptime
         for n in self.neighbourList:
@@ -261,11 +285,21 @@ class RouterHandler(EventMixin):
         self.queuedMsgForArp = {} #nested
         self.ARP_TIMEOUT = 4
         self.myips  = []
-        self.initialize_controller()
 
         self.helloint = 5
-        self.lsuint = 30
+        self.lsuint = 10
         self.adjList = {}
+
+        self.initialize_controller()
+
+        if self.type == SWiTCH_TYPE_ROUTER:
+            self.adjList[self.rid] = NeighbourList()
+            self.adjList[self.rid].addEntry(0,OWN_SUBNET[self.name][1],
+                find_subnet(OWN_SUBNET[self.name][1],"255.255.255.0")
+                ,"255.255.255.0",
+                OWN_SUBNET[self.name][2],
+                self.helloint,True)
+            print str(self.adjList[self.rid])
 
         # LSU Fields
         if self.type == SWiTCH_TYPE_ROUTER:
@@ -276,31 +310,33 @@ class RouterHandler(EventMixin):
 
     def setupUpdateLoop(self):
         counter = 0
+        seq = 0
         while(1):
 
             if counter%self.helloint == 0:
                 self.sendHelloAll()
             if counter%self.lsuint == 0:
-                seld.sendLSU()
+                seq += 1
+                self.sendLSUAll(seq)
 
-            self.checkTimeOut()
-            self.updateRoutingTable()
+            if self.checkTimeOut():
+                seq += 1
+                self.sendLSU(seq)
 
             time.sleep(1)
             counter = counter + 1
 
     def checkTimeOut(self):
-        for key,value in self.intf2nl.items():
-            value.checkTimeout()
+        if self.rid in self.adjList.keys():
+            self.adjList[self.rid].checkTimeout()
 
     def sendHelloAll(self):
         for entry in self.intf_ip:
             self.sendHello(entry)
 
 
-    def updateRoutingTable():
-
-        rtable[self.name] = []
+    def updateRoutingTable(self):
+        temp = []
 
         queue = [(self.rid,[self.rid])]
         visited = Set()
@@ -308,16 +344,25 @@ class RouterHandler(EventMixin):
         done = Set()
         while queue:
             (vertex,path) = queue.pop(0)
-            for ne in self.adjList[vertex]:
-                if ne.rid not in visited:
-                    path_new = path + [ne.rid]
-                    queue.append((ne.rid, path_new))
-                    visited.add(v.rid)
+            if vertex in self.adjList.keys():
+                for ne in self.adjList[vertex].items():
+                    if ne.rid not in visited:
+                        path_new = path + [ne.rid]
+                        queue.append((ne.rid, path_new))
+                        visited.add(ne.rid)
 
-                    if combine(ne.subnet,ne.netmask) not in done:
-                        done.add(combine(ne.subnet,ne.netmask))
-                        rtable.append(combine(ne.subnet,ne.netmask),ne.ip,ne.interface)
+                        if getCIDR(ne.subnet,ne.netmask) not in done:
+                            done.add(getCIDR(ne.subnet,ne.netmask))
+                            temp.append([getCIDR(ne.subnet,ne.netmask)
+                                ,self.adjList[self.rid].getIP(path_new[1])
+                                ,self.adjList[self.rid].getInterface(path_new[1])]) 
 
+        print "**&&*&^%$^%$^"
+        if self.name =="R1":
+            for key,value in self.adjList.items():
+                print key,value
+        print self.name,temp
+        rtable[self.name] = temp
         self.initialize_controller()
 
     def sendHello(self,entry):
@@ -330,6 +375,7 @@ class RouterHandler(EventMixin):
         pwospf_hello.rid = self.rid
         pwospf_hello.type = pwospf.TYPE_HELLO
         pwospf_hello.helloint = self.helloint << 16
+        pwospf_hello.netmask = IPAddr("255.255.255.0").toUnsigned()
 
         ipp = pkt.ipv4()
         ipp.protocol = ipv4.PWOSPF_PROTOCOL
@@ -348,9 +394,37 @@ class RouterHandler(EventMixin):
         msg.data = ether.pack()
         self.connection.send(msg)
 
-    def sendLSU(self):
-        #TODO
-        pass
+    def sendLSUAll(self,seq):
+        if len(self.adjList[self.rid].items())==0:
+            return
+        for ne in self.adjList[self.rid].items():
+            self.sendLSU(seq , ROUTERS_IPS[ne.interface] , ne.ip)
+
+    def sendLSU(self,seq,srcip,dstip):
+        print "Sending LSU Packets: ",self.name
+        pwospf_hello = pwospf()
+        pwospf_hello.rid = self.rid
+        pwospf_hello.type = pwospf.TYPE_LSU
+        pwospf_hello.seq = seq
+        pwospf_hello.nadv = len(self.adjList[self.rid].items())
+
+        for ne in self.adjList[self.rid].items():
+            print ne.subnet
+            pwospf_hello.advList.append(IPAddr(ne.subnet).toUnsigned())
+            pwospf_hello.advList.append(IPAddr(ne.netmask).toUnsigned())
+            pwospf_hello.advList.append(ne.rid)
+
+        ipp = pkt.ipv4()
+        ipp.protocol = ipv4.PWOSPF_PROTOCOL
+        ipp.srcip = IPAddr(srcip)
+        ipp.dstip = IPAddr(dstip)
+        ipp.payload = pwospf_hello
+
+        ether = ethernet()
+        ether.type = ethernet.IP_TYPE
+        ether.payload = ipp
+
+        self.send_ipv4_packet(ether)
     
     def initialize_controller(self):
         for port in self.connection.features.ports:
@@ -363,14 +437,15 @@ class RouterHandler(EventMixin):
                 if port.name in ROUTERS_IPS:
 #                     ROUTERS_IP_2_PORT[ROUTERS_IPS[port.name]] = port.hw_addr
                     self.myips.append(ROUTERS_IPS[port.name])
-            log.debug(port.name + str(port.__dict__))
+            # log.debug(port.name + str(port.__dict__))
         
         if self.name[0] == "S":
             self.type = SWITCH_TYPE_HUB
         elif self.name[0] == "R":
             self.type = SWiTCH_TYPE_ROUTER
             self.intf_ip = [ [key,value] for key,value in ROUTERS_IPS.items() if self.name==key[0:2] ]
-            self.rid = IPAddr(self.intf_ip[0][1]).toUnsignedN()
+            self.rid = IPAddr(self.intf_ip[0][1]).toUnsigned()
+
         if self.name in rtable:
             self.routingInfo = RoutingTable()
             self.routingInfo.addEntries(rtable[self.name])
@@ -499,19 +574,24 @@ class RouterHandler(EventMixin):
                 self.send_icmp_msg_small(packet, match, event, pkt.TYPE_DEST_UNREACH, packet)
                 #self.drop_packet(event)
 
-    def forwardLSUPacket(self,event, packet):
+    def send_ipv4_packet(self,packet,event=None):
+        msg = of.ofp_packet_out()
+        msg.actions.append(of.ofp_action_output(port = of.OFPP_FLOOD))
+        msg.data = packet.pack()
+        if event is not None:
+            msg.in_port = event.port
+        self.connection.send(msg)
 
+    def forwardLSUPacket(self,packet,event):
         pwospf = packet.find('pwospf')
         pwospf.ttl-=1
 
         if pwospf.ttl == 0:
             return
-
-        msg = of.ofp_packet_out()
-        msg.actions.append(of.ofp_action_output(port = of.OFPP_FLOOD))
-        msg.data = packet.pack()
-        msg.in_port = self.event.port
-        self.connection.send(msg)
+        for ne in self.adjList[self.rid].items():
+            ipv4 = packet.find('ipv4')
+            ipv4.dstip = IPAddr(ne.ip)
+            self.send_ipv4_packet(packet,event)
 
     def handle_pwospf_packet(self, event, packet):
         ipv4 = packet.find('ipv4')
@@ -519,27 +599,37 @@ class RouterHandler(EventMixin):
 
         if pwospf.type == pkt.pwospf.TYPE_HELLO:
 
-            print "HELLO received", str(pwospf)
+            print "HELLO received", str(pwospf),self.port2intf[event.port]
             
             intf = self.port2intf[event.port]
 
             if self.rid not in self.adjList.keys():
                 self.adjList[self.rid] = NeighbourList()
 
-            self.adjList[self.rid].addEntry(pwospf.rid,str(ipv4.srcip),pwospf.netmask,intf,pwospf.helloint)
+            self.adjList[self.rid].addEntry(pwospf.rid,str(ipv4.srcip),find_subnet(str(ipv4.srcip),str(IPAddr(pwospf.netmask)))
+                ,str(IPAddr(pwospf.netmask)),intf,pwospf.helloint)
 
         if pwospf.type == pkt.pwospf.TYPE_LSU:
+            if pwospf.rid == self.rid:
+                return
             print "LSU received", str(pwospf)
+
+            ip = str(packet.find('ipv4').srcip)
 
             self.adjList[pwospf.rid] = NeighbourList()
 
-            for adv in self.advList:
+            advList = pwospf.matrix(pwospf.advList,3)
+
+            # print self.name,pwospf.rid,advList
+            for adv in advList:
                 subnet = adv[0]
                 netmask = adv[1]
                 rid = adv[2]
-                self.adjList[pwospf.rid].addEntry(rid,subnet,netmask,"",0)
+                self.adjList[pwospf.rid].addEntry(rid,str(IPAddr(ip)),str(IPAddr(subnet)),str(IPAddr(netmask)),"R0-eth0",0)
             
-            self.forwardLSUPacket(event)
+            self.forwardLSUPacket(packet,event)
+
+            self.updateRoutingTable()
 
     def forward_pkt_to_next_hop(self, packet, match, event, route, justSend = False):
         ipp = packet.find("ipv4")
@@ -557,24 +647,7 @@ class RouterHandler(EventMixin):
         if nextHopIp not in self.arpTable:
             log.info("%s: mac for nexthopip(%s) is not present in arptable(%s). returning"%(self.name, nextHopIp, self.arpTable))
         
-        nextHopAddr = self.arpTable[nextHopIp]#ROUTERS_IP_2_PORT[str(route.nextHopIpAddr)] if str(route.nextHopIpAddr) not in self.myips or nextHopIp not in self.arpTable else self.arpTable[nextHopIp]
-        
-#         ipp.ttl = ipp.ttl - 1
-# #         packet_in = event.ofp
-#           
-#         e = packet#pkt.ethernet()
-#         e.src = self.port2Mac[self.intf2Port[route.intf]]
-#         e.dst = nextHopAddr
-# #         e.type = e.IP_TYPE
-#   
-# #         e.payload = ipp
-#           
-#         msg = of.ofp_packet_out()
-#         msg.actions.append(of.ofp_action_output(port = self.intf2Port[route.intf]))
-#         msg.data = e#vent.ofp
-# #         msg.in_port = event.port
-#         event.connection.send(msg)
-#         return        
+        nextHopAddr = self.arpTable[nextHopIp]
 
         msg = of.ofp_flow_mod()
         msg.match = of.ofp_match.from_packet(packet, event.port)
