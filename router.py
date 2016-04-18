@@ -7,6 +7,7 @@ from pox.lib.packet import arp, icmp,pwospf,ipv4
 import pox.lib.packet as pkt
 from pox.lib.packet.ethernet import ethernet, ETHER_BROADCAST, ETHER_ANY
 from pox.lib.addresses import IPAddr, IP_ANY, IP_BROADCAST
+from pox.lib.recoco import Timer
 # from pox.proto.arp_helper import *
 import threading
 import time
@@ -97,7 +98,7 @@ class RoutingEntry():
 
     def __str__(self):
         return "netIP: %s/%s, nextHopIp: %s, intf: %s"%(self.textedIP(self.netIP), self.netMaskCnt, self.nextHopIpAddr, self.intf)
-    
+
     def matchTextIp(self, ipText):
         return self.match(self.parseTextIp(ipText))
 
@@ -122,7 +123,7 @@ class RoutingEntry():
         intMask -= 1
         intMask <<= (32 - mask)
         return intMask
-    
+
     def parseTextIp(self, ip):
         slash = ip.find("/")
         if slash >= 0:
@@ -149,7 +150,7 @@ class RoutingEntry():
 class RoutingTable():
     def __init__(self):
         self.routingEntries = []
-    
+
     def addEntry(self, entry = []):
         if type(entry) != list:
             raise Exception("Invalid entry")
@@ -179,9 +180,9 @@ class RoutingTable():
             if route.matchTextIp(ip) and matchCnt < route.netMaskCnt:
                 matchCnt = route.netMaskCnt
                 resRoute = route
-        
+
         return resRoute
-    
+
     def __str__(self):
         return "[" + ", ".join(["<"+str(r)+">" for r in self.routingEntries]) + "]"
 
@@ -260,7 +261,7 @@ class NeighbourList():
         for n in self.neighbourList:
             if n.rid == ne.rid and n.ip == ne.ip and n.netmask == ne.netmask:
                 n.uptime = int(round(time.time()))
-                return 
+                return
 
         # If not exist in table, add to table
         self.neighbourList.append(ne)
@@ -286,8 +287,8 @@ class RouterHandler(EventMixin):
         self.ARP_TIMEOUT = 4
         self.myips  = []
 
-        self.helloint = 5
-        self.lsuint = 10
+        self.helloint = 10
+        self.lsuint = 30
         self.adjList = {}
 
         self.initialize_controller()
@@ -302,12 +303,15 @@ class RouterHandler(EventMixin):
             print str(self.adjList[self.rid])
 
         # LSU Fields
+        self.seq = 0
         if self.type == SWiTCH_TYPE_ROUTER:
             self.counter = 0
-            update_thread = threading.Thread(target=self.setupUpdateLoop)
-            update_thread.daemon = True
-            update_thread.start()
 
+            # update_thread = threading.Thread(target=self.setupUpdateLoop)
+            # update_thread.daemon = True
+            # update_thread.start()
+            Timer(timeToWake = self.helloint, callback = self.sendHelloAll, recurring = True)
+            Timer(timeToWake = self.lsuint, callback = self.sendLSUAll, recurring = True)
     def setupUpdateLoop(self):
         counter = 0
         seq = 0
@@ -355,7 +359,7 @@ class RouterHandler(EventMixin):
                             done.add(getCIDR(ne.subnet,ne.netmask))
                             temp.append([getCIDR(ne.subnet,ne.netmask)
                                 ,self.adjList[self.rid].getIP(path_new[1])
-                                ,self.adjList[self.rid].getInterface(path_new[1])]) 
+                                ,self.adjList[self.rid].getInterface(path_new[1])])
 
         print "**&&*&^%$^%$^"
         if self.name =="R1":
@@ -386,6 +390,7 @@ class RouterHandler(EventMixin):
         ether = ethernet()
         ether.type = ethernet.IP_TYPE
         ether.src = mac
+
         ether.dst = ETHER_BROADCAST
         ether.payload = ipp
 
@@ -393,12 +398,12 @@ class RouterHandler(EventMixin):
         msg.actions.append(of.ofp_action_output(port = port))
         msg.data = ether.pack()
         self.connection.send(msg)
-
-    def sendLSUAll(self,seq):
+    def sendLSUAll(self):
         if len(self.adjList[self.rid].items())==0:
             return
         for ne in self.adjList[self.rid].items():
-            self.sendLSU(seq , ROUTERS_IPS[ne.interface] , ne.ip)
+            self.sendLSU(self.seq , ROUTERS_IPS[ne.interface] , ne.ip)
+        self.seq += 1;
 
     def sendLSU(self,seq,srcip,dstip):
         print "Sending LSU Packets: ",self.name
@@ -425,7 +430,7 @@ class RouterHandler(EventMixin):
         ether.payload = ipp
 
         self.send_ipv4_packet(ether)
-    
+
     def initialize_controller(self):
         for port in self.connection.features.ports:
             if self.name == "":
@@ -438,7 +443,7 @@ class RouterHandler(EventMixin):
 #                     ROUTERS_IP_2_PORT[ROUTERS_IPS[port.name]] = port.hw_addr
                     self.myips.append(ROUTERS_IPS[port.name])
             # log.debug(port.name + str(port.__dict__))
-        
+
         if self.name[0] == "S":
             self.type = SWITCH_TYPE_HUB
         elif self.name[0] == "R":
@@ -458,7 +463,7 @@ class RouterHandler(EventMixin):
             return
 
 #         packet_in = event.ofp # The actual ofp_packet_in message.
-        
+
         if packet.type == packet.LLDP_TYPE or packet.dst.isBridgeFiltered():
             self.drop_packet(event)
             return
@@ -466,7 +471,7 @@ class RouterHandler(EventMixin):
         if self.type == SWITCH_TYPE_HUB:
             self.act_like_hub(event, packet)
 #             self.act_like_l2switch(event, packet)
-            
+
         elif self.type == SWiTCH_TYPE_ROUTER:
             self.act_like_router(event, packet)
             #log.debug("%s: Just implemented"%self.name)
@@ -499,7 +504,7 @@ class RouterHandler(EventMixin):
         msg = of.ofp_flow_mod()
         msg = of.ofp_packet_out()
         msg.data = packet_in
-        
+
         #log.debug("match info at %s: %s"%(self.name, match))
 
         # Add an action to send to the specified port
@@ -508,7 +513,7 @@ class RouterHandler(EventMixin):
 
         # Send message to switch
         self.connection.send(msg)
-    
+
     def act_like_l2switch(self, event, packet):
         dst_port = None
         self.hwadr2Port[packet.src] = event.port
@@ -520,13 +525,13 @@ class RouterHandler(EventMixin):
             msg = of.ofp_flow_mod()
             msg = of.ofp_packet_out()
             msg.data = packet_in
-            
+
             #log.debug("match info at %s: %s"%(self.name, match))
-    
+
             # Add an action to send to the specified port
             action = of.ofp_action_output(port = of.OFPP_ALL)
             msg.actions.append(action)
-    
+
             # Send message to switch
             self.connection.send(msg)
         else:
@@ -535,7 +540,7 @@ class RouterHandler(EventMixin):
                 msg.match.dl_src = packet.dst
                 msg.actions.append(of.ofp_action_output(port = event.port))
                 event.connection.send(msg)
-            
+
                 # This is the packet that just came in -- we want to
                 # install the rule and also resend the packet.
                 msg = of.ofp_flow_mod()
@@ -545,7 +550,7 @@ class RouterHandler(EventMixin):
                 msg.actions.append(of.ofp_action_output(port = dst_port))
                 event.connection.send(msg)
 
-           
+
     def act_like_router(self, event, packet):
         if packet.find("arp"):
             self.handle_arp_packet(event, packet)
@@ -600,7 +605,7 @@ class RouterHandler(EventMixin):
         if pwospf.type == pkt.pwospf.TYPE_HELLO:
 
             print "HELLO received", str(pwospf),self.port2intf[event.port]
-            
+
             intf = self.port2intf[event.port]
 
             if self.rid not in self.adjList.keys():
@@ -626,7 +631,7 @@ class RouterHandler(EventMixin):
                 netmask = adv[1]
                 rid = adv[2]
                 self.adjList[pwospf.rid].addEntry(rid,str(IPAddr(ip)),str(IPAddr(subnet)),str(IPAddr(netmask)),"R0-eth0",0)
-            
+
             self.forwardLSUPacket(packet,event)
 
             self.updateRoutingTable()
@@ -635,7 +640,7 @@ class RouterHandler(EventMixin):
         ipp = packet.find("ipv4")
         if ipp.ttl <= 1:
             return self.send_icmp_ttl_exceed(packet, match, event)
-    
+
         nextHopIp = route.nextHopIpAddr if str(route.nextHopIpAddr) not in self.myips else match.nw_dst
         if not justSend and nextHopIp not in self.arpTable:
             self.send_arp_request(event, route, packet, match, nextHopIp)
@@ -643,10 +648,10 @@ class RouterHandler(EventMixin):
             q.append([packet, match, event, route])
             self.queuedMsgForArp[nextHopIp] = q
             return
-        
+
         if nextHopIp not in self.arpTable:
             log.info("%s: mac for nexthopip(%s) is not present in arptable(%s). returning"%(self.name, nextHopIp, self.arpTable))
-        
+
         nextHopAddr = self.arpTable[nextHopIp]
 
         msg = of.ofp_flow_mod()
@@ -665,7 +670,7 @@ class RouterHandler(EventMixin):
 
     def send_icmp_msg_large(self, event, src_ip = IP_ANY, dst_ip = IP_ANY, src_mac = ETHER_BROADCAST,
                             dst_mac = ETHER_BROADCAST, payload = None, icmp_type = pkt.TYPE_ECHO_REPLY):
-        
+
         icmp = pkt.icmp()
         icmp.type = icmp_type
         icmp.payload = payload
@@ -689,7 +694,7 @@ class RouterHandler(EventMixin):
         msg.data = e.pack()
         msg.in_port = event.port
         event.connection.send(msg)
-    
+
     def send_icmp_ttl_exceed(self, packet, match, event):
         payload = b"    "+packet.find("ipv4").pack()
         return self.send_icmp_msg_large(event, IPAddr(ROUTERS_IPS[self.port2intf[event.port]]), packet.find("ipv4").srcip, packet.dst, packet.src, payload, pkt.TYPE_TIME_EXCEED)
@@ -697,7 +702,7 @@ class RouterHandler(EventMixin):
     def send_icmp_msg_small(self, packet, match, event, icmp_type = pkt.TYPE_ECHO_REPLY, payload = None):
         pload = payload if payload is not None or packet is None or packet.find("icmp") is None else packet.find("icmp").payload
         return self.send_icmp_msg_large(event, packet.find("ipv4").dstip, packet.find("ipv4").srcip, packet.dst, packet.src, pload, icmp_type)
-        
+
         icmp = pkt.icmp()
         icmp.type = pkt.TYPE_ECHO_REPLY
         icmp.payload = packet.find("icmp").payload
@@ -733,7 +738,7 @@ class RouterHandler(EventMixin):
             self.arpTable[match.nw_src] = match.dl_src
         if match.nw_dst not in self.arpTable and match.nw_dst not in (IP_ANY, IP_BROADCAST) and match.dl_dst not in (ETHER_ANY, ETHER_BROADCAST):
             self.arpTable[match.nw_dst] = match.dl_dst
-            
+
         if match.nw_proto == pkt.arp.REQUEST:
             log.debug("%s: got rerequest, match: %s"%(self.name, match))
             if match.nw_dst == IPAddr(ROUTERS_IPS[self.port2intf[event.port]]):
@@ -754,7 +759,7 @@ class RouterHandler(EventMixin):
                 except Exception, e:
                     log.info("%s: problem"%self.name)
             else:
-                self.drop_packet(event)  
+                self.drop_packet(event)
 
     def send_arp_response(self, packet, match, event):
         # reply to ARP request
@@ -774,9 +779,9 @@ class RouterHandler(EventMixin):
         msg.actions.append(of.ofp_action_output(port = of.OFPP_IN_PORT))
         msg.in_port = event.port
         event.connection.send(msg)
-        
+
     def send_arp_request(self, event, route, packet, match, nextHopIp):
-        
+
         if nextHopIp in self.outstandingarp and time.time() > self.outstandingarp[nextHopIp] + self.ARP_TIMEOUT:
             return
         self.outstandingarp[nextHopIp] = time.time()
@@ -787,11 +792,11 @@ class RouterHandler(EventMixin):
         r.protolen = r.protolen
         r.opcode = r.REQUEST
         r.hwdst = ETHER_BROADCAST
-        
+
         r.protodst = nextHopIp
         r.hwsrc = self.port2Mac[self.intf2Port[route.intf]]
         r.protosrc = IPAddr(ROUTERS_IPS[route.intf])
-        
+
         #r.protodst = packet.next.dstip
         e = ethernet(type=ethernet.ARP_TYPE, src=r.hwsrc,
                      dst=r.hwdst)
@@ -803,7 +808,7 @@ class RouterHandler(EventMixin):
         msg.actions.append(of.ofp_action_output(port = self.intf2Port[route.intf]))
         msg.in_port = event.port
         event.connection.send(msg)
-    
+
     def send_arp_response(self, packet, match, event):
         # reply to ARP request
         #import pdb; pdb.set_trace()
@@ -823,35 +828,35 @@ class RouterHandler(EventMixin):
         msg.in_port = event.port
         event.connection.send(msg)
 
-    
-#     def _handle_QueueStatsReceived(self, e): 
-#         log.info("inside QueueStatsReceived") 
-#     def _handle_ConnectionDown(self, e): 
-#         log.info("inside ConnectionDown") 
-#     def _handle_PortStatus(self, e): 
-#         log.info("inside PortStatus") 
-#     def _handle_PortStatsReceived(self, e): 
-#         log.info("inside PortStatsReceived") 
-#     def _handle_RawStatsReply(self, e): 
-#         log.info("inside RawStatsReply") 
-#     def _handle_AggregateFlowStatsReceived(self, e): 
-#         log.info("inside AggregateFlowStatsReceived") 
-#     def _handle_ConnectionUp(self, e): 
-#         log.info("inside ConnectionUp") 
-#     def _handle_SwitchDescReceived(self, e): 
-#         log.info("inside SwitchDescReceived") 
-#     def _handle_FlowStatsReceived(self, e): 
-#         log.info("inside FlowStatsReceived") 
-#     def _handle_TableStatsReceived(self, e): 
-#         log.info("inside TableStatsReceived") 
-#     def _handle_ErrorIn(self, e): 
-#         log.info("inside ErrorIn") 
-#     def _handle_BarrierIn(self, e): 
-#         log.info("inside BarrierIn") 
-#     def _handle_FlowRemoved(self, e): 
-#         log.info("inside FlowRemoved") 
-#     def _handle_(self, e): 
-#         log.info("inside ") 
+
+#     def _handle_QueueStatsReceived(self, e):
+#         log.info("inside QueueStatsReceived")
+#     def _handle_ConnectionDown(self, e):
+#         log.info("inside ConnectionDown")
+#     def _handle_PortStatus(self, e):
+#         log.info("inside PortStatus")
+#     def _handle_PortStatsReceived(self, e):
+#         log.info("inside PortStatsReceived")
+#     def _handle_RawStatsReply(self, e):
+#         log.info("inside RawStatsReply")
+#     def _handle_AggregateFlowStatsReceived(self, e):
+#         log.info("inside AggregateFlowStatsReceived")
+#     def _handle_ConnectionUp(self, e):
+#         log.info("inside ConnectionUp")
+#     def _handle_SwitchDescReceived(self, e):
+#         log.info("inside SwitchDescReceived")
+#     def _handle_FlowStatsReceived(self, e):
+#         log.info("inside FlowStatsReceived")
+#     def _handle_TableStatsReceived(self, e):
+#         log.info("inside TableStatsReceived")
+#     def _handle_ErrorIn(self, e):
+#         log.info("inside ErrorIn")
+#     def _handle_BarrierIn(self, e):
+#         log.info("inside BarrierIn")
+#     def _handle_FlowRemoved(self, e):
+#         log.info("inside FlowRemoved")
+#     def _handle_(self, e):
+#         log.info("inside ")
 
 class DefHalndler(EventMixin):
     """
@@ -872,9 +877,9 @@ class DefHalndler(EventMixin):
 def launch (transparent=False):
     """
     Starts an Simple Router Topology
-    """        
+    """
     core.registerNew(DefHalndler, str_to_bool(transparent))
-    
+
     #r = get_ip_setting()
     #if r == -1:
     #    log.debug("Couldn't load config file for ip addresses, check whether %s exists" % IPCONFIG_FILE)
