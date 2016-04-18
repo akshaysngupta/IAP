@@ -35,6 +35,34 @@
 #    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 #    |                       Authentication                          |
 #    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#
+# LSU Packet
+# +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |     Sequence                |          TTL                    |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |                      # advertisements                         |
+#    +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#    |                                                               |
+#    +-                                                            +-+
+#    |                  Link state advertisements                    |
+#    +-                                                            +-+
+#    |                              ...                              |
+#
+# Hello Packet
+# +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#      |                        Network Mask                           |
+#      +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#      |         HelloInt              |           padding             |
+#      +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+#
+# Advertisements
+ # +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ #   |                           Subnet                              |
+ #   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ #   |                           Mask                                |
+ #   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ #   |                         Router ID                             |
+ #   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 # #
 #======================================================================
 
@@ -71,15 +99,31 @@ class pwospf(packet_base):
         self.autype = 0
         self.auth = 0
 
+        # Hello packet
+        self.helloint = 0
+        self.netmask = 0
+
+        # LSU packet
+        self.seq = 0
+        self.ttl = 0
+        self.nadv = 0
+        self.advList = []
+
         if raw is not None:
             self.parse(raw)
 
         self._init(kw)
 
     def __str__(self):
-        s = "[PWOSPF: (Type: "+str(self.type) + ", Length: " + str(self.plen)+")]"
+        if self.type==pwospf.TYPE_HELLO:
+            s = "[PWOSPF Hello: (Router: "+ str(self.rid) +", Type: "+str(self.type) + ", Length: " + str(self.plen) + ", Helloint:" +str(self.helloint)+")]"
+        if self.type==pwospf.TYPE_LSU:
+            s = "[PWOSPF LSU: (Router: "+ str(self.rid) +", Type: "+str(self.type) + ", Length: " + str(self.plen)+")]"
 
         return s
+
+    def matrix(l,n):
+        return [l[i:i+n] for i in xrange(0,len(l),n)]
 
     def parse(self, raw):
         assert isinstance(raw, bytes)
@@ -101,8 +145,18 @@ class pwospf(packet_base):
             self.msg('(pwospf parse) warning invalid PWOSPF len %u' % self.plen)
             return
 
-        length = self.plen
-        self.next =  raw[pwospf.MIN_LEN:length]
+        if self.type==pwospf.TYPE_HELLO:
+           (self.netmask,self.helloint) = struct.unpack('!II', raw[pwospf.MIN_LEN:self.plen])
+           self.helloint = self.helloint >> 16
+           self.next =  raw[self.MIN_LEN + 8 :self.plen]
+
+        if self.type==pwospf.TYPE_LSU:
+            (self.seq,self.ttl,self.nadv) = struct.unpack('!HHI', raw[pwospf.MIN_LEN:pwospf.MIN_LEN+8])
+            nadv_string = '!'.join(self.nadv * 'III')
+            self.advList =  matrix(struct.unpack(nadv_string, raw[pwospf.MIN_LEN+8:self.plen]) )
+
+            self.next =  raw[self.MIN_LEN + 8 + self.nadv * 12 : self.plen]
+
         self.parsed = True
 
     def checksum(self):
@@ -114,5 +168,17 @@ class pwospf(packet_base):
     def hdr(self, payload):
         self.plen = self.MIN_LEN + len(payload)
         self.csum = self.checksum()
-        return struct.pack('!BBHIIHHQ',self.version, self.type, self.plen, self.rid, self.aid, self.csum,
-            self.autype, self.auth)
+        if self.type==pwospf.TYPE_HELLO:
+            self.plen += 8
+            return struct.pack('!BBHIIHHQII',self.version, self.type, self.plen, self.rid, self.aid, self.csum,
+            self.autype, self.auth,self.netmask,self.helloint)
+        if self.type==pwospf.TYPE_LSU:
+            self.plen += 8 + self.nadv * 12
+            packet1 =  struct.pack('!BBHIIHHQHHI',self.version, self.type, self.plen, self.rid, self.aid, self.csum,
+            self.autype, self.auth,self.seq,self.ttl,self.nadv)
+
+            for adv in self.advList:
+                packet2 += struct.pack("!III",adv[0],adv[1],adv[2])
+            packet1 = packet1 + packet2
+
+            return packet1

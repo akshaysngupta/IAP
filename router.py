@@ -267,7 +267,7 @@ class RouterHandler(EventMixin):
         pwospf_hello = pwospf()
         pwospf_hello.rid = self.rid
         pwospf_hello.type = pwospf.TYPE_HELLO
-        pwospf_hello.payload = bytes(self.helloint << 16)
+        pwospf_hello.helloint = self.helloint << 16
 
         ipp = pkt.ipv4()
         ipp.protocol = ipv4.PWOSPF_PROTOCOL
@@ -441,8 +441,10 @@ class RouterHandler(EventMixin):
         pwospf = packet.find('pwospf')
         if pwospf.type == pkt.pwospf.TYPE_HELLO:
             print "Hello received", str(pwospf)
-            helloint = int(pwospf.payload) >> 16
+            
+            helloint = pwospf.helloint
             intf = self.port2intf[event.port]
+
             if intf not in self.intf2nl.keys():
                 self.intf2nl[intf] = NeighbourList()
             self.intf2nl[intf].addEntry(pwospf.rid,str(ipv4.srcip),helloint)
