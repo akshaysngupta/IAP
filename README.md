@@ -1,15 +1,23 @@
 # IAP
 This contains course work for Internet Architecture and Protocol Lab.
 
-Running the controller
-Paste the controller.py file in the pox/pox/misc folder
+First we need to copy the newly created pwospf packet to right location.
+Run the following command in the terminal:
+```
+cp pox_pwosf_packet/* ~/pox/pox/lib/packet/
+```
 
-`pox/pox.py log.level --DEBUG misc.controller`
+We also need to place the controller `router.py` into the right location:
+```
+cp router.py ~/pox/pox/misc/
+```
 
-Running mininet
+Running the controller `router.py`:
+```
+pox/pox.py log.level --DEBUG misc.router
+```
 
-`sudo mn --custom topo.py --topo mytopo --controller remote`
-
-Delete earlier configuration
-
-`sudo mn -c`
+Set up topology:
+```
+sudo python topology.py
+```
